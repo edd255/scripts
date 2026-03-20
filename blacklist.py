@@ -1,7 +1,8 @@
-import urllib.request
-import urllib.error
+import urllib.request as request
+from urllib.error import URLError
 from pwn import log
-import os
+from pathlib import Path
+import tempfile
 
 LISTS = {
     "StevenBlack": "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/fakenews-gambling-porn-social/hosts",
@@ -29,6 +30,16 @@ TLDS = {
     ".click",
 }
 
+LOCALS = (
+    "127.0.0.1 ",
+    "255.255.255.255 ",
+    "::1 ",
+    "fe80::",
+    "ff80::",
+    "ff00::",
+    "ff02::",
+)
+
 
 def remove_duplicates(in_file: str, out_file: str) -> None:
     seen = set()
@@ -43,11 +54,11 @@ def dl_cat(urls: dict[str, str], file: str) -> None:
     with open(file, "a") as outfile:
         for name, url in urls.items():
             try:
-                with urllib.request.urlopen(url) as response:
+                with request.urlopen(url) as response:
                     content = response.read().decode("utf-8")
                     outfile.write(content)
                     log.success(f"Processed '{name}'.")
-            except urllib.error.URLError as e:
+            except URLError as e:
                 log.failure(f"Error downloading {url}: {e}")
             except UnicodeDecodeError as e:
                 log.failure(f"Error decoding content from {url}: {e}")
@@ -55,29 +66,19 @@ def dl_cat(urls: dict[str, str], file: str) -> None:
 
 
 def cleanup_names(file: str) -> None:
-    with open(file, "r") as fd:
-        lines = fd.readlines()
-    processed_lines = []
-    for line in lines:
-        line = line.split("#", 1)[0]
-        if line.startswith(
-            (
-                "127.0.0.1 ",
-                "255.255.255.255 ",
-                "::1 ",
-                "fe80::",
-                "ff80::",
-                "ff00::",
-                "ff02::",
-            )
-        ):
-            continue
-        line = line.replace("0.0.0.0 ", "")
-        line = line.replace("  ", "").replace("\n", "")
-        if line.strip() and line != "0.0.0.0":
-            processed_lines.append(f"{line}\n")
-    with open(file, "w") as fd:
-        fd.writelines(processed_lines)
+    path = Path(file)
+    with tempfile.TemporaryDirectory(dir=path.parent) as tmp_dir:
+        tmp_path = Path(tmp_dir) / path.name
+        with path.open("r") as in_fd, tmp_path.open("w") as out_fd:
+            for line in in_fd:
+                line = line.split("#", 1)[0]
+                if line.startswith(LOCALS):
+                    continue
+                line = line.replace("0.0.0.0 ", "")
+                line = line.replace("  ", "").replace("\n", "")
+                if line.strip() and line != "0.0.0.0":
+                    out_fd.write(f"{line}\n")
+        tmp_path.replace(path)
     log.success(f"Processed 'names' file: {file}")
 
 
@@ -96,12 +97,13 @@ def add_tlds(tlds: set[str], file: str) -> None:
 
 
 def main() -> None:
-    add_llms(LLMS, "blocked-names.txt")
-    add_tlds(TLDS, "tmp")
-    dl_cat(LISTS, "tmp")
-    cleanup_names("tmp")
-    remove_duplicates("tmp", "blocked-names.txt")
-    os.remove("tmp")
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir) / "tmp"
+        add_tlds(TLDS, str(tmp_path))
+        dl_cat(LISTS, str(tmp_path))
+        cleanup_names(str(tmp_path))
+        remove_duplicates(str(tmp_path), "blocked-names.txt")
+        add_llms(LLMS, "blocked-names.txt")
 
 
 if __name__ == "__main__":
