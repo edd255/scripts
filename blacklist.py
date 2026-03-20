@@ -14,6 +14,21 @@ LLMS = {
     "Gemini": "gemini.google.com",
 }
 
+TLDS = {
+    ".ru",
+    ".su",
+    ".xn--p1ai",
+    ".xn--p1acf",
+    ".cn",
+    ".xn--fiqs8s",
+    ".xn--55qx5d",
+    ".xn--io0a7i",
+    ".zip",
+    ".mov",
+    ".biz",
+    ".click",
+}
+
 
 def remove_duplicates(in_file: str, out_file: str) -> None:
     seen = set()
@@ -73,8 +88,16 @@ def add_llms(urls: dict[str, str], file: str) -> None:
             fd.write(f"{url}\n")
 
 
+def add_tlds(tlds: set[str], file: str) -> None:
+    with open(file, "a") as fd:
+        for tld in tlds:
+            log.success(f"Processed '{tld}'.")
+            fd.write(f"*{tld}\n")
+
+
 def main() -> None:
     add_llms(LLMS, "blocked-names.txt")
+    add_tlds(TLDS, "tmp")
     dl_cat(LISTS, "tmp")
     cleanup_names("tmp")
     remove_duplicates("tmp", "blocked-names.txt")
