@@ -2,9 +2,8 @@ import urllib.request
 import urllib.error
 from pwn import log
 import os
-import re
 
-HOSTS = {
+LISTS = {
     "StevenBlack": "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/fakenews-gambling-porn-social/hosts",
     "1Hosts": "https://badmojr.github.io/1Hosts/Lite/hosts.txt",
 }
@@ -26,7 +25,7 @@ def remove_duplicates(in_file: str, out_file: str) -> None:
 
 
 def dl_cat(urls: dict[str, str], file: str) -> None:
-    with open(file, "w") as outfile:
+    with open(file, "a") as outfile:
         for name, url in urls.items():
             try:
                 with urllib.request.urlopen(url) as response:
@@ -40,36 +39,46 @@ def dl_cat(urls: dict[str, str], file: str) -> None:
     log.success(f"Content concatenated into {file}")
 
 
-def cleanup_hosts(file: str):
+def cleanup_names(file: str) -> None:
     with open(file, "r") as fd:
         lines = fd.readlines()
     processed_lines = []
     for line in lines:
-        match = re.match(r"^[^#]*", line)
-        if match is None:
+        line = line.split("#", 1)[0]
+        if line.startswith(
+            (
+                "127.0.0.1 ",
+                "255.255.255.255 ",
+                "::1 ",
+                "fe80::",
+                "ff80::",
+                "ff00::",
+                "ff02::",
+            )
+        ):
             continue
-        line = match.group(0) if line.strip() else ""
+        line = line.replace("0.0.0.0 ", "")
         line = line.replace("  ", "").replace("\n", "")
-        if line.strip():
+        if line.strip() and line != "0.0.0.0":
             processed_lines.append(f"{line}\n")
     with open(file, "w") as fd:
         fd.writelines(processed_lines)
-    log.success(f"Processed 'hosts' file: {file}")
+    log.success(f"Processed 'names' file: {file}")
 
 
 def add_llms(urls: dict[str, str], file: str) -> None:
     with open(file, "a") as fd:
         for name, url in urls.items():
             log.success(f"Processed '{name}'.")
-            fd.write(f"0.0.0.0 {url}\n")
+            fd.write(f"{url}\n")
 
 
 def main() -> None:
-    dl_cat(HOSTS, "tmp")
-    cleanup_hosts("tmp")
-    remove_duplicates("tmp", "hosts")
+    add_llms(LLMS, "blocked-names.txt")
+    dl_cat(LISTS, "tmp")
+    cleanup_names("tmp")
+    remove_duplicates("tmp", "blocked-names.txt")
     os.remove("tmp")
-    add_llms(LLMS, "hosts")
 
 
 if __name__ == "__main__":
