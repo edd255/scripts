@@ -1,8 +1,9 @@
-import urllib.request as request
-from urllib.error import URLError
-from pwn import log
-from pathlib import Path
 import tempfile
+from pathlib import Path
+from urllib import request
+from urllib.error import URLError
+
+from pwn import log
 
 LISTS = {
     "StevenBlack": "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/fakenews-gambling-porn-social/hosts",

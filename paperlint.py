@@ -10,7 +10,6 @@ from enum import IntFlag
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
-
 YELLOW = "\033[33m"
 BLUE = "\033[94m"
 GRAY = "\033[90m"
