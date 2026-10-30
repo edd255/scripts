@@ -1,118 +1,182 @@
 #!/usr/bin/env fish
 
-function switch_theme
-    set current_scheme (gsettings get org.gnome.desktop.interface color-scheme)
-    if string match -q "'prefer-dark'" $current_scheme
-        echo "[*] Switching to light..."
-        set theme light
-    else
-        echo "[*] Switching to dark..."
-        set theme dark
-    end
+function log_info
+    echo (set_color --bold green)"[*]"(set_color --reset) (string join ' ' -- $argv)
+end
 
-    set alacritty_cfg ~/.config/alacritty/alacritty.toml
-    set alacritty_dark "dark_mode"
-    set alacritty_light "light_mode"
+function log_warn
+    echo (set_color --bold red)"[!]"(set_color --reset) (string join ' ' -- $argv) >&2
+end
 
-    set cosmic_cfg ~/.config/cosmic/com.system76.CosmicTheme.Mode/v1/is_dark
-    set cosmic_dark "true"
-    set cosmic_light "false"
-
-    set kitty_cfg ~/.config/kitty/kitty.conf
-    set kitty_dark "mocha"
-    set kitty_light "latte"
-
-    set nvim_cfg ~/.config/nvim/lua/plugins/plugins.lua
-    set nvim_dark "mocha"
-    set nvim_light "latte"
-
-    set zathura_cfg ~/.config/zathura/zathurarc
-    set zathura_dark "mocha"
-    set zathura_light "latte"
-
-    set git_cfg ~/.config/git/delta.gitconfig
-    set git_dark "features = catppuccin-mocha"
-    set git_light "features = catppuccin-latte"
-
-    set lazygit_cfg ~/.config/fish/functions/lg.fish
-    set lazygit_dark "mocha"
-    set lazygit_light "latte"
-
-    set yazi_cfg ~/.config/yazi/init.lua
-    set yazi_flavor_cfg ~/.config/yazi/theme.toml
-    set yazi_dark "mocha"
-    set yazi_light "latte"
-
-    set zellij_cfg ~/.config/zellij/config.kdl
-    set zellij_dark "catppuccin-mocha"
-    set zellij_light "catppuccin-latte"
-
-    set television_cfg ~/.config/zellij/config.kdl
-    set television_dark "catppuccin-mocha"
-    set television_light "catppuccin-latte"
-
-    set batman_cfg ~/.config/fish/functions/batman.fish
-    set batman_dark "dark"
-    set batman_light "light"
-
-    set bat_cfg ~/.config/fish/functions/bat.fish
-    set bat_dark "mocha"
-    set bat_light "latte"
-
-    set cat_cfg ~/.config/fish/functions/cat.fish
-    set cat_dark "mocha"
-    set cat_light "latte"
-
-    set fzf_cfg ~/.config/fish/conf.d/env.fish
-    set fzf_dark "darkrc"
-    set fzf_light "lightrc"
-
-    if test "$theme" = "light"
-        sd $alacritty_dark $alacritty_light $alacritty_cfg
-        sd $kitty_dark $kitty_light $kitty_cfg
-        sd $zathura_dark $zathura_light $zathura_cfg
-        sd $git_dark $git_light $git_cfg
-        sd $cosmic_dark $cosmic_light $cosmic_cfg
-        sd $lazygit_dark $lazygit_light $lazygit_cfg
-        sd $yazi_dark $yazi_light $yazi_cfg
-        sd $yazi_dark $yazi_light $yazi_flavor_cfg
-        sd $nvim_dark $nvim_light $nvim_cfg
-        sd $zellij_dark $zellij_light $zellij_cfg
-        sd $television_dark $television_light $television_cfg
-        sd $batman_dark $batman_light $batman_cfg
-        sd $bat_dark $bat_light $bat_cfg
-        sd $cat_dark $cat_light $cat_cfg
-        sd $fzf_dark $fzf_light $fzf_cfg
-        set fish_theme "catppuccin_latte"
-        set gnome_scheme "'prefer-light'"
-    else if test "$theme" = "dark"
-        sd $alacritty_light $alacritty_dark $alacritty_cfg
-        sd $kitty_light $kitty_dark $kitty_cfg
-        sd $zathura_light $zathura_dark $zathura_cfg
-        sd $git_light $git_dark $git_cfg
-        sd $cosmic_light $cosmic_dark $cosmic_cfg
-        sd $lazygit_light $lazygit_dark $lazygit_cfg
-        sd $yazi_light $yazi_dark $yazi_cfg
-        sd $yazi_light $yazi_dark $yazi_flavor_cfg
-        sd $nvim_light $nvim_dark $nvim_cfg
-        sd $zellij_light $zellij_dark $zellij_cfg
-        sd $television_light $television_dark $television_cfg
-        sd $batman_light $batman_dark $batman_cfg
-        sd $bat_light $bat_dark $bat_cfg
-        sd $cat_light $cat_dark $cat_cfg
-        sd $fzf_light $fzf_dark $fzf_cfg
-        set fish_theme "catppuccin_mocha"
-        set gnome_scheme "'prefer-dark'"
-    else
-        echo "[-] Invalid theme: $theme. Use 'light' or 'dark'."
+function link_theme -a target link
+    if not test -e "$target"
+        log_warn "Missing theme target: $target"
         return 1
     end
 
-    echo "[*] Changing GNOME settings..."
-    gsettings set org.gnome.desktop.interface color-scheme $gnome_scheme
+    mkdir -p (dirname "$link")
+    command ln -sfnT -- "$target" "$link"
+end
 
-    echo "[*] Changing fish theme..."
-    printf 'y\n' | fish_config theme save "$fish_theme"
+function replace_if_file -a from to file
+    if not test -f "$file"
+        log_warn "Missing config: $file"
+        return 1
+    end
+
+    sd "$from" "$to" "$file"
+end
+
+function touch_if_file -a file
+    if test -f "$file"
+        touch "$file"
+    else
+        log_warn "Missing config for reload touch: $file"
+        return 1
+    end
+end
+
+function switch_theme
+    set -l config_home "$HOME/.config"
+    set -l current_scheme (gsettings get org.gnome.desktop.interface color-scheme)
+
+    set -l theme
+    set -l catppuccin
+    set -l other_catppuccin
+    set -l gnome_scheme
+    set -l cosmic_value
+    set -l other_cosmic_value
+    set -l wallpaper_from
+    set -l wallpaper_to
+
+    switch "$current_scheme"
+        case "'prefer-dark'"
+            set theme light
+            log_info "Switching to light..."
+        case "'prefer-light'"
+            set theme dark
+            log_info "Switching to dark..."
+        case '*'
+            log_warn "Unknown GNOME color-scheme: $current_scheme"
+            return 1
+    end
+
+    switch "$theme"
+        case light
+            set catppuccin catppuccin-latte
+            set other_catppuccin catppuccin-mocha
+            set gnome_scheme "'prefer-light'"
+            set fish_theme catppuccin_latte
+            set cosmic_value false
+            set other_cosmic_value true
+            set wallpaper_from 'cosmos\.jpg'
+            set wallpaper_to 'rocket.jxl'
+
+        case dark
+            set catppuccin catppuccin-mocha
+            set other_catppuccin catppuccin-latte
+            set fish_theme catppuccin_mocha
+            set gnome_scheme "'prefer-dark'"
+            set cosmic_value true
+            set other_cosmic_value false
+            set wallpaper_from 'rocket\.jxl'
+            set wallpaper_to 'cosmos.jpg'
+    end
+
+    set -l alacritty_cfg "$config_home/alacritty/alacritty.toml"
+    set -l alacritty_theme "$config_home/alacritty/themes/theme.toml"
+
+    set -l gitui_theme "$config_home/gitui/theme.ron"
+
+    set -l foot_cfg "$config_home/foot/foot.ini"
+    set -l foot_theme "$config_home/foot/themes/theme.ini"
+
+    set -l kitty_cfg "$config_home/kitty/kitty.conf"
+    set -l kitty_theme "$config_home/kitty/themes/current-theme.conf"
+
+    set -l fzf_theme "$config_home/fzf/current-theme"
+
+    set -l cosmic_cfg "$config_home/cosmic/com.system76.CosmicTheme.Mode/v1/is_dark"
+
+    set -l nvim_cfg "$config_home/nvim/lua/plugins/plugins.lua"
+
+    set -l zathura_cfg "$config_home/zathura/zathurarc"
+    set -l zathura_theme "$config_home/zathura/current-theme"
+
+    set -l git_cfg "$config_home/git/delta.gitconfig"
+
+    set -l zellij_cfg "$config_home/zellij/config.kdl"
+
+    set -l television_theme "$config_home/television/themes/current-theme.toml"
+
+    set -l wallpaper_cfgs \
+        "$config_home/cosmic/com.system76.CosmicBackground/v1/output.eDP-1" \
+        "$config_home/cosmic/com.system76.CosmicBackground/v1/output.DP-5" \
+        "$config_home/cosmic/com.system76.CosmicBackground/v1/output.HDMI-A-1" \
+        "$config_home/cosmic/com.system76.CosmicBackground/v1/all"
+
+    log_info "Change alacritty..."
+    link_theme "$config_home/alacritty/themes/$catppuccin.toml" "$alacritty_theme"
+    touch_if_file "$alacritty_cfg"
+
+    log_info "Change foot..."
+    link_theme "$config_home/foot/themes/$catppuccin.ini" "$foot_theme"
+    touch_if_file "$foot_cfg"
+
+    set foot_mode dark
+    test "$catppuccin" = catppuccin-latte; and set foot_mode light
+    sd 'initial-color-theme=(light|dark)' "initial-color-theme=$foot_mode" "$foot_cfg"
+
+    log_info "Change gitui..."
+    link_theme "$config_home/gitui/$catppuccin.ron" "$gitui_theme"
+    touch_if_file "$gitui_theme"
+
+    log_info "Change fish..."
+    fish_config theme choose $fish_theme
+
+    log_info "Change fzf..."
+    link_theme "$config_home/fzf/$catppuccin" "$fzf_theme"
+
+    log_info "Change zathura..."
+    link_theme "$config_home/zathura/$catppuccin" "$zathura_theme"
+    touch_if_file "$zathura_cfg"
+
+    log_info "Change kitty..."
+    link_theme "$config_home/kitty/themes/$catppuccin.conf" "$kitty_theme"
+    touch_if_file "$kitty_cfg"
+
+    log_info "Change git..."
+    replace_if_file "$other_catppuccin" "$catppuccin" "$git_cfg"
+
+    log_info "Change cosmic..."
+    replace_if_file "$other_cosmic_value" "$cosmic_value" "$cosmic_cfg"
+
+    log_info "Change neovim..."
+    replace_if_file "$other_catppuccin" "$catppuccin" "$nvim_cfg"
+
+    log_info "Change zellij..."
+    replace_if_file "$other_catppuccin" "$catppuccin" "$zellij_cfg"
+
+    log_info "Change television..."
+    link_theme "$config_home/television/themes/$catppuccin.toml" "$television_theme"
+
+    log_info "Change wallpaper..."
+    for cfg in $wallpaper_cfgs
+        replace_if_file "$wallpaper_from" "$wallpaper_to" "$cfg"
+    end
+
+    log_info "Rebuilding bat cache..."
+    command bat cache --build > /dev/null
+
+    log_info "Changing GNOME settings..."
+    gsettings set org.gnome.desktop.interface color-scheme "$gnome_scheme"
+
+    log_info "Changing darkman..."
+    if command -sq darkman
+        darkman set "$theme" > /dev/null
+    else
+        log_warn "Missing command: darkman"
+    end
 end
 
 switch_theme
