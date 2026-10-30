@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-Download latest OpenMoji release, then create KeePassXC-friendly SVGs.
+Download the latest OpenMoji release, then create KeePassXC-friendly SVGs.
 
 Usage:
-  python3 openmoji_keepassxc.py --download-latest --crop 4
+  python3 -m pip install -r requirements.txt
+  python3 openmoji-keepassxc.py --download-latest
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import shutil
 import sys
@@ -17,11 +19,14 @@ import tempfile
 import urllib.error
 import urllib.request
 import zipfile
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_REPO = "hfg-gmuend/openmoji"
+DEFAULT_CONTENT_FILL = 0.9
+DEFAULT_MIN_VIEWBOX_SIZE = 48.0
+FIT_RENDER_SIZE = 288
 
 SVG_VIEWBOX_RE = re.compile(
     r'(<svg\b[^>]*?\sviewBox\s*=\s*)(["\'])([^"\']+)(\2)',
@@ -56,6 +61,111 @@ def parse_viewbox(value: str) -> tuple[float, float, float, float]:
     return x, y, width, height
 
 
+def set_viewbox(
+    svg_text: str, viewbox: tuple[float, float, float, float]
+) -> tuple[str, bool]:
+    new_viewbox = " ".join(fmt_num(value) for value in viewbox)
+
+    def replace(match: re.Match[str]) -> str:
+        prefix = match.group(1)
+        quote = match.group(2)
+        return f"{prefix}{quote}{new_viewbox}{quote}"
+
+    new_text, count = SVG_VIEWBOX_RE.subn(replace, svg_text, count=1)
+    return new_text, count == 1
+
+
+def require_fit_dependencies() -> tuple[Any, Any]:
+    try:
+        import cairosvg
+        from PIL import Image
+    except ImportError as exc:
+        raise RuntimeError(
+            "content fitting requires CairoSVG and Pillow; "
+            "run: python3 -m pip install -r requirements.txt"
+        ) from exc
+
+    return cairosvg, Image
+
+
+def validate_fit_options(content_fill: float, min_viewbox_size: float) -> None:
+    if not math.isfinite(content_fill) or not 0 < content_fill <= 1:
+        raise ValueError("content_fill must be greater than 0 and at most 1")
+    if not math.isfinite(min_viewbox_size) or min_viewbox_size <= 0:
+        raise ValueError("min_viewbox_size must be greater than 0")
+
+
+def fit_viewbox(
+    svg_text: str,
+    content_fill: float = DEFAULT_CONTENT_FILL,
+    min_viewbox_size: float = DEFAULT_MIN_VIEWBOX_SIZE,
+    render_size: int = FIT_RENDER_SIZE,
+) -> tuple[str, bool]:
+    """
+    Fit a square viewBox around the rendered, non-transparent content.
+
+    The longest painted dimension occupies ``content_fill`` of the resulting
+    square. ``min_viewbox_size`` caps enlargement of intentionally small
+    symbols. The result never exceeds the source viewBox's longest dimension.
+    """
+
+    validate_fit_options(content_fill, min_viewbox_size)
+    if render_size <= 0:
+        raise ValueError("render_size must be greater than 0")
+
+    match = SVG_VIEWBOX_RE.search(svg_text)
+    if match is None:
+        raise ValueError("SVG has no viewBox")
+
+    x, y, width, height = parse_viewbox(match.group(3))
+    if width <= 0 or height <= 0:
+        raise ValueError(f"viewBox dimensions must be positive: {match.group(3)!r}")
+    if not math.isclose(width, height):
+        raise ValueError("content fitting requires a square source viewBox")
+
+    scale = render_size / max(width, height)
+    render_width = max(1, round(width * scale))
+    render_height = max(1, round(height * scale))
+
+    cairosvg, Image = require_fit_dependencies()
+    png = cairosvg.svg2png(
+        bytestring=svg_text.encode("utf-8"),
+        output_width=render_width,
+        output_height=render_height,
+    )
+
+    with Image.open(BytesIO(png)) as image:
+        alpha_bbox = image.convert("RGBA").getchannel("A").getbbox()
+
+    if alpha_bbox is None:
+        raise ValueError("rendered SVG is fully transparent")
+
+    left, top, right, bottom = alpha_bbox
+    content_left = x + (left * width / render_width)
+    content_top = y + (top * height / render_height)
+    content_right = x + (right * width / render_width)
+    content_bottom = y + (bottom * height / render_height)
+
+    content_width = content_right - content_left
+    content_height = content_bottom - content_top
+    source_side = max(width, height)
+    fitted_side = max(content_width, content_height) / content_fill
+    side = min(source_side, max(min_viewbox_size, fitted_side))
+
+    center_x = (content_left + content_right) / 2
+    center_y = (content_top + content_bottom) / 2
+    fitted_x = min(max(center_x - (side / 2), x), x + width - side)
+    fitted_y = min(max(center_y - (side / 2), y), y + height - side)
+    fitted_viewbox = (
+        fitted_x,
+        fitted_y,
+        side,
+        side,
+    )
+
+    return set_viewbox(svg_text, fitted_viewbox)
+
+
 def crop_viewbox(svg_text: str, crop: float) -> tuple[str, bool]:
     """
     Return (new_svg_text, changed).
@@ -70,34 +180,22 @@ def crop_viewbox(svg_text: str, crop: float) -> tuple[str, bool]:
     if crop == 0:
         return svg_text, False
 
-    changed = False
+    match = SVG_VIEWBOX_RE.search(svg_text)
+    if match is None:
+        return svg_text, False
 
-    def replace(match: re.Match[str]) -> str:
-        nonlocal changed
+    old_viewbox = match.group(3)
+    x, y, width, height = parse_viewbox(old_viewbox)
+    new_width = width - (2 * crop)
+    new_height = height - (2 * crop)
 
-        prefix = match.group(1)
-        quote = match.group(2)
-        old_viewbox = match.group(3)
+    if new_width <= 0 or new_height <= 0:
+        raise ValueError(f"crop={crop} is too large for viewBox={old_viewbox!r}")
 
-        x, y, width, height = parse_viewbox(old_viewbox)
-
-        new_x = x + crop
-        new_y = y + crop
-        new_width = width - (2 * crop)
-        new_height = height - (2 * crop)
-
-        if new_width <= 0 or new_height <= 0:
-            raise ValueError(f"crop={crop} is too large for viewBox={old_viewbox!r}")
-
-        new_viewbox = " ".join(
-            fmt_num(v) for v in (new_x, new_y, new_width, new_height)
-        )
-
-        changed = True
-        return f"{prefix}{quote}{new_viewbox}{quote}"
-
-    new_text, count = SVG_VIEWBOX_RE.subn(replace, svg_text, count=1)
-    return new_text, changed and count == 1
+    return set_viewbox(
+        svg_text,
+        (x + crop, y + crop, new_width, new_height),
+    )
 
 
 def request_json(url: str) -> dict[str, Any]:
@@ -248,6 +346,9 @@ def process_openmoji(
     metadata_path: Path,
     out_dir: Path,
     crop: float,
+    fit_content: bool,
+    content_fill: float,
+    min_viewbox_size: float,
     include_hex: bool,
     dry_run: bool,
     limit: int,
@@ -266,6 +367,18 @@ def process_openmoji(
         print(f"error: failed to read metadata: {exc}", file=sys.stderr)
         return 2
 
+    if fit_content:
+        try:
+            validate_fit_options(content_fill, min_viewbox_size)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        try:
+            require_fit_dependencies()
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
     if not dry_run:
         out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -274,6 +387,7 @@ def process_openmoji(
     missing_svg = 0
     missing_metadata = 0
     viewbox_warnings = 0
+    fit_fallbacks = 0
 
     for item in items:
         hexcode = item.get("hexcode")
@@ -297,9 +411,25 @@ def process_openmoji(
 
         try:
             svg_text = src.read_text(encoding="utf-8")
-            svg_text, changed = crop_viewbox(svg_text, crop)
+            if fit_content:
+                try:
+                    svg_text, changed = fit_viewbox(
+                        svg_text,
+                        content_fill=content_fill,
+                        min_viewbox_size=min_viewbox_size,
+                    )
+                except Exception as exc:
+                    fit_fallbacks += 1
+                    print(
+                        f"warning: content fit failed for {src}; "
+                        f"using crop={crop}: {exc}",
+                        file=sys.stderr,
+                    )
+                    svg_text, changed = crop_viewbox(svg_text, crop)
+            else:
+                svg_text, changed = crop_viewbox(svg_text, crop)
 
-            if crop != 0 and not changed:
+            if not changed and (fit_content or crop != 0):
                 viewbox_warnings += 1
                 print(f"warning: no viewBox changed: {src}", file=sys.stderr)
 
@@ -322,6 +452,8 @@ def process_openmoji(
     print(f"missing SVGs skipped: {missing_svg}")
     print(f"metadata rows skipped: {missing_metadata}")
     print(f"viewBox warnings: {viewbox_warnings}")
+    if fit_content:
+        print(f"content-fit fallbacks: {fit_fallbacks}")
 
     if dry_run:
         print("dry run only: no files written")
@@ -333,7 +465,7 @@ def process_openmoji(
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Download, rename, and viewBox-crop OpenMoji SVGs for KeePassXC."
+        description="Download, rename, and content-fit OpenMoji SVGs for KeePassXC."
     )
 
     parser.add_argument(
@@ -397,8 +529,34 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=4.0,
         help=(
-            "Amount to crop from each side of the SVG viewBox. "
-            "Use 4 first; try 5 or 6 for stronger zoom. Default: 4"
+            "Fixed crop and content-fit fallback, in SVG units per side. "
+            "Used directly with --fixed-crop. Default: 4"
+        ),
+    )
+
+    parser.add_argument(
+        "--fixed-crop",
+        action="store_true",
+        help="Disable content-aware fitting and apply --crop uniformly.",
+    )
+
+    parser.add_argument(
+        "--content-fill",
+        type=float,
+        default=DEFAULT_CONTENT_FILL,
+        help=(
+            "Fraction of the fitted square occupied by the artwork's longest "
+            f"painted dimension. Default: {DEFAULT_CONTENT_FILL}"
+        ),
+    )
+
+    parser.add_argument(
+        "--min-viewbox-size",
+        type=float,
+        default=DEFAULT_MIN_VIEWBOX_SIZE,
+        help=(
+            "Smallest automatic square viewBox, limiting enlargement of "
+            f"intentionally small symbols. Default: {DEFAULT_MIN_VIEWBOX_SIZE:g}"
         ),
     )
 
@@ -445,6 +603,9 @@ def main() -> int:
             metadata_path=metadata_path,
             out_dir=args.out,
             crop=args.crop,
+            fit_content=not args.fixed_crop,
+            content_fill=args.content_fill,
+            min_viewbox_size=args.min_viewbox_size,
             include_hex=args.include_hex,
             dry_run=args.dry_run,
             limit=args.limit,
